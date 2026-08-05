@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { promisify } from 'util';
 import { exec } from 'child_process';
+import * as step from '@flow-step/step-toolkit'
 
 const execPromise = promisify(exec);
 
@@ -101,50 +102,99 @@ export function getDownloadUrl(version: string): { url: string; filename: string
 }
 
 /**
- * 下载文件
- * @param url 下载地址
- * @param destPath 目标文件路径
- * @param timeout 超时（毫秒）
+ * 下载文件（带进度显示）
  */
-export async function downloadFile(url: string, destPath: string, timeout: number = 300000): Promise<void> {
-    const destDir = path.dirname(destPath);
-    if (!fs.existsSync(destDir)) {
-        fs.mkdirSync(destDir, { recursive: true });
-    }
-
+export function downloadFile(url: string, destPath: string, timeout: number): Promise<void> {
     return new Promise((resolve, reject) => {
         const file = fs.createWriteStream(destPath);
+        let downloaded = 0;
+        let total = 0;
+        let lastLoggedPercent = -1;
+        let isResolved = false;
+
+        // 超时处理
         const timeoutHandle = setTimeout(() => {
-            file.close();
-            reject(new Error(`下载超时（${timeout / 1000}秒）`));
+            if (!isResolved) {
+                file.close();
+                reject(new Error(`下载超时（${timeout / 1000}秒）`));
+            }
         }, timeout);
 
         https.get(url, (response) => {
+            // 处理非 200 状态
             if (response.statusCode !== 200) {
                 clearTimeout(timeoutHandle);
+                file.close();
                 reject(new Error(`下载失败，HTTP ${response.statusCode}`));
                 return;
             }
 
-            response.pipe(file);
+            // 获取总大小（可能为 0，表示服务端未返回 Content-Length）
+            total = parseInt(response.headers['content-length'] || '0', 10);
 
-            file.on('finish', () => {
-                clearTimeout(timeoutHandle);
-                file.close();
-                resolve();
+            step.info(`📊 文件总大小: ${total > 0 ? formatSize(total) : '未知'}`);
+
+            // 数据到达
+            response.on('data', (chunk) => {
+                downloaded += chunk.length;
+                file.write(chunk);
+
+                if (total > 0) {
+                    // 已知总大小：按百分比显示
+                    const percent = Math.floor((downloaded / total) * 100);
+                    // 只在百分比变化时打印，避免刷屏
+                    if (percent > lastLoggedPercent) {
+                        lastLoggedPercent = percent;
+                        step.info(`⏳ 下载进度: ${percent}% (${formatSize(downloaded)} / ${formatSize(total)})`);
+                    }
+                } else {
+                    // 未知总大小：每下载 5MB 显示一次
+                    const mbStep = Math.floor(downloaded / (5 * 1024 * 1024));
+                    if (mbStep > lastLoggedPercent) {
+                        lastLoggedPercent = mbStep;
+                        step.info(`⏳ 已下载: ${formatSize(downloaded)}`);
+                    }
+                }
             });
 
-            file.on('error', (err) => {
+            // 下载完成
+            response.on('end', () => {
                 clearTimeout(timeoutHandle);
+                file.end();
+            });
+
+            // 响应错误
+            response.on('error', (err) => {
+                clearTimeout(timeoutHandle);
+                file.close();
                 reject(err);
             });
         }).on('error', (err) => {
+            // 请求错误
             clearTimeout(timeoutHandle);
+            file.close();
             reject(err);
+        });
+
+        // 文件写入完成
+        file.on('finish', () => {
+            if (!isResolved) {
+                isResolved = true;
+                step.info(`✅ 下载完成 (${formatSize(downloaded)})`);
+                resolve();
+            }
+        });
+
+        // 文件写入错误
+        file.on('error', (err) => {
+            clearTimeout(timeoutHandle);
+            if (!isResolved) {
+                isResolved = true;
+                reject(err);
+            }
         });
     });
 }
-
 /**
  * 解压 tar.xz / tar.gz / zip 文件
  */
