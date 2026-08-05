@@ -1,0 +1,19 @@
+---
+apiVersion: v2
+kind: DefaultJob
+id: CustomNodeEnvBuilder
+name: CustomNodeEnvBuilder
+description: 下载自定义Node版本
+helpUrl: https://github.com/Ulyssesyi/CustomNodeEnvBuilder
+execution:
+  executor: node
+  main: dist/index.js
+items:
+  - label: Node.js 版本
+    name: NODE_VERSION
+    type: input
+    description: 请输入node的版本号，例如 22 或 20.11.0
+    value: 22
+    rules:
+      - require: true
+        errorMessage: Node.js 版本不能为空
